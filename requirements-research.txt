@@ -1,0 +1,3 @@
+# only for simulation.py, power.py, compare_real.py, mixed_data.py (not needed by the app)
+scikit-learn
+joblib

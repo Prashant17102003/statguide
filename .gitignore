@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+simulation_results.csv
+power_results.csv
+real_data_results.csv
+.ipynb_checkpoints/
