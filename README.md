@@ -18,7 +18,7 @@ Upload a CSV, Excel, text or JSON file, then use the sections:
 | Paired / one-sample | paired t / Wilcoxon, one-sample t / Wilcoxon, Friedman test for 3+ related columns |
 | ANOVA | Welch ANOVA, Kruskal-Wallis, Holm-adjusted pairwise tests |
 | Chi-square | chi-square, Cramer's V, Fisher (2x2), adjusted standardised residuals |
-| Report | one report as Excel, PDF or Word |
+| Report | one report as Excel, PDF or Word: overview, normality (also per group), PCA (optional log), regression with categorical predictors and hold-out test, paired / one-sample / Friedman tests, group comparison and chi-square |
 
 ## Run locally
 ```
