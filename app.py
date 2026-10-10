@@ -20,6 +20,16 @@ def load_table(raw, kind, sep_name, sheet):
 
 
 @st.cache_data(show_spinner=False)
+def cached_diag_pngs(d, y, xs):
+    """Residual-diagnostic plots drawn once per (data, model) and reused as small PNG images."""
+    import io
+    r = RG.fit_ols(d, y, list(xs)); out = []
+    for f in RG.diag_figs(r):
+        b = io.BytesIO(); f.savefig(b, format="png", dpi=110); out.append(b.getvalue()); RG.plt.close(f)
+    return out
+
+
+@st.cache_data(show_spinner=False)
 def cached_norm(d, alpha):
     return normality_table(d, alpha)
 
@@ -190,7 +200,9 @@ if nav == "Regression":
             st.pyplot(RG.line_fig(r) if (r["k"] == 1 and not dums) else RG.avp_fig(r))
             st.dataframe(r["coef"].round(4))
             st.subheader("Residual diagnostics")
-            d1, d2, d3 = RG.diag_figs(r); g1, g2, g3 = st.columns(3); g1.pyplot(d1); g2.pyplot(d2); g3.pyplot(d3)
+            g1, g2, g3 = st.columns(3)
+            for g, png in zip((g1, g2, g3), cached_diag_pngs(dfr, ry, tuple(xs))):
+                g.image(png, use_container_width=True)
             st.markdown("**Interpretation**")
             for line in RG.interpret(r, show_dw=ordered):
                 st.markdown("- " + line)
@@ -402,10 +414,16 @@ if nav == "Report":
     inc = st.multiselect("Sections to include", RP.SECTIONS, default=RP.SECTIONS, key="rp_inc")
     maxv = st.slider("Variables shown in the distributions section", 1, 12, 6, key="rp_maxv")
     nc, cc = E.split_columns(df); cfg = {"title": rp_title, "author": rp_author, "include": inc, "max_vars": maxv}
+    cfg["pca_log"] = st.checkbox("PCA section: apply log(1+x) to skewed non-negative variables", key="rp_pca_log")
+    rcat_opts = [c for c in cc if 2 <= df[c].nunique(dropna=True) <= 10]
     if len(nc) >= 2 and st.checkbox("Add a regression", key="rp_reg_on"):
-        ry = st.selectbox("Response (Y)", nc, key="rp_ry"); rx = st.multiselect("Predictor(s) (X)", [c for c in nc if c != ry], default=[c for c in nc if c != ry][:1], key="rp_rx")
-        if rx:
-            cfg["reg"] = (ry, rx)
+        ry = st.selectbox("Response (Y)", nc, key="rp_ry"); rx = st.multiselect("Numeric predictor(s) (X)", [c for c in nc if c != ry], default=[c for c in nc if c != ry][:1], key="rp_rx")
+        rcat = st.multiselect("Categorical predictor(s) (optional, dummy-coded)", rcat_opts, key="rp_rcat")
+        q1, q2 = st.columns(2)
+        cfg["reg_dw"] = q1.checkbox("Rows are in time order (include Durbin-Watson)", key="rp_rdw")
+        cfg["reg_ho"] = q2.checkbox("Include a hold-out test (25% of rows)", key="rp_rho")
+        if rx or rcat:
+            cfg["reg"] = (ry, rx); cfg["reg_cat"] = rcat
     gcols = [c for c in cc if 2 <= df[c].nunique() <= 10]
     if nc and gcols and st.checkbox("Add a group comparison (t-test or ANOVA)", key="rp_grp_on"):
         cfg["grp"] = (st.selectbox("Numeric variable", nc, key="rp_gn"), st.selectbox("Group column", gcols, key="rp_gc"))
@@ -413,6 +431,16 @@ if nav == "Report":
     if len(ccols) >= 2 and st.checkbox("Add a chi-square test", key="rp_chi_on"):
         ca = st.selectbox("Row variable", ccols, key="rp_ca"); cb = st.selectbox("Column variable", [c for c in ccols if c != ca], key="rp_cb")
         cfg["chi"] = (ca, cb)
+    if len(nc) >= 2 and st.checkbox("Add a paired test (two related columns)", key="rp_pr_on"):
+        pa_ = st.selectbox("First measurement", nc, key="rp_pa"); pb_ = st.selectbox("Second measurement", [c for c in nc if c != pa_], key="rp_pb")
+        cfg["paired"] = (pa_, pb_)
+    if nc and st.checkbox("Add a one-sample test", key="rp_os_on"):
+        oc_ = st.selectbox("Numeric column", nc, key="rp_oc"); om_ = st.number_input("Value to compare with", value=0.0, key="rp_omu")
+        cfg["one"] = (oc_, float(om_))
+    if len(nc) >= 3 and st.checkbox("Add a Friedman test (3 or more related columns)", key="rp_fr_on"):
+        fcs_ = st.multiselect("Related columns", nc, default=nc[:3], key="rp_fcols")
+        if len(fcs_) >= 3:
+            cfg["friedman"] = fcs_
     if st.button("Build report", key="rp_go"):
         with st.spinner("Building the report (this can take a few seconds)..."):
             blocks = RP.build_report(df, fname, cfg)
