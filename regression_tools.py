@@ -91,8 +91,8 @@ def diag_figs(r):
     f1, a = plt.subplots(figsize=(4, 3.2)); a.scatter(r["fit"], r["resid"], s=10, alpha=.55); a.axhline(0, color="red")
     a.set_xlabel("Fitted"); a.set_ylabel("Residual"); a.set_title("Residuals vs fitted")
     f2, a = plt.subplots(figsize=(4, 3.2)); stats.probplot(r["resid"], dist="norm", plot=a); a.set_title("Residual Q-Q plot")
-    f3, a = plt.subplots(figsize=(4, 3.2)); a.bar(range(r["n"]), r["cook"], width=1.0); a.axhline(4 / r["n"], color="red", ls="--", label="4/n")
-    a.set_xlabel("Observation"); a.set_ylabel("Cook's distance"); a.legend(fontsize=8); a.set_title("Influential points")
+    f3, a = plt.subplots(figsize=(4, 3.2)); a.vlines(np.arange(r["n"]), 0, r["cook"], lw=.6, color="#4f46e5"); a.axhline(4 / r["n"], color="red", ls="--", label="4/n")
+    a.set_xlim(0, r["n"]); a.set_xlabel("Observation"); a.set_ylabel("Cook's distance"); a.legend(fontsize=8); a.set_title("Influential points")
     for f in (f1, f2, f3):
         f.tight_layout()
     return f1, f2, f3
