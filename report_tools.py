@@ -13,8 +13,9 @@ from PIL import Image as PILImage
 import eda_tools as E
 import pca_tools as PC
 import regression_tools as RG
-from advisor_tools import GOALS, normality_table, overall, recommend
-from stats_tools import two_group_test, multi_group_test, interpret_anova, chi_square_test, interpret_chi
+from advisor_tools import GOALS, normality_table, group_normality, overall, recommend
+from stats_tools import (two_group_test, multi_group_test, interpret_anova, chi_square_test, interpret_chi,
+                         paired_test, one_sample_test, friedman_test, interpret_paired, interpret_one_sample, interpret_friedman, fmt_p)
 
 SECTIONS = ["Dataset overview", "Descriptive statistics", "Missing values", "Normality assessment",
             "Distributions (first variables)", "Correlation", "Test advisor", "PCA"]
@@ -96,8 +97,8 @@ def build_report(df, name, cfg):
             p("No numeric variables to assess.")
         else:
             share = overall(nt, 80)[1]
-            p(f"**{share:.0f}%** of the assessed numeric variables look normal-like. Verdict for the whole dataset (80% threshold): "
-              f"**{'normal, parametric tests are suitable' if normal else 'not normal, non-parametric tests are safer'}**.")
+            p(f"**{share:.0f}%** of the assessed numeric variables look normal-like. Rough screen only (80% threshold): "
+              f"**{'mostly normal-like, so parametric tests are a reasonable starting point' if normal else 'mostly not normal-like, so non-parametric tests are the safer starting point'}**.")
             tb(nt.drop(columns=["rule"]), "Normality by variable")
             p("Up to 200 values the Shapiro-Wilk p-value decides; with more data, skewness and kurtosis are used (rules of thumb). "
               "Normality really matters per group or for model residuals, not for the whole dataset.")
@@ -113,13 +114,13 @@ def build_report(df, name, cfg):
         tp = E.top_pairs(cm); tb(tp, "Strongest relationships"); bl(E.interpret_pairs(tp))
     if "Test advisor" in inc:
         h1("Suggested statistical tests")
-        p(f"Based on the normality verdict ({'normal' if normal else 'not normal'}), these tests are suggested:")
+        p(f"Based on the rough normality screen ({'mostly normal-like' if normal else 'mostly not normal-like'}), these tests are suggested. Treat them as guidance: check normality per group or in the residuals before deciding.")
         tb(pd.DataFrame([{"goal": g, "route": recommend(g, normal)["family"], "suggested test": recommend(g, normal)["test"],
                           "follow-up": recommend(g, normal)["post"]} for g in GOALS]), "Test suggestions")
     if "PCA" in inc and len(nc) >= 3:
         h1("Principal component analysis")
         try:
-            res = PC.run_pca(df, nc[:30], True); m = PC.choose_m(res, "Cumulative variance threshold", 80)
+            res = PC.run_pca(df, nc[:30], True, bool(cfg.get("pca_log"))); m = PC.choose_m(res, "Cumulative variance threshold", 80)
             suit = PC.suitability(res); imp = PC.importance(res, m)
             im(png(PC.scree_fig(res, m)), "Scree plot"); im(png(PC.importance_fig(imp)), "Variable importance")
             tb(pd.DataFrame({"component": [f"PC{i + 1}" for i in range(res["p"])], "eigenvalue": res["eig"].round(3),
@@ -128,14 +129,59 @@ def build_report(df, name, cfg):
         except ValueError as e:
             p(f"PCA could not be run: {e}")
     if cfg.get("reg"):
-        h1("Regression"); y, xs = cfg["reg"]
+        h1("Regression"); y, xs = cfg["reg"]; cats = cfg.get("reg_cat") or []
         try:
-            r = RG.fit_ols(df, y, xs)
-            p(f"Response: **{y}**; predictors: **{', '.join(xs)}**; rows used: {r['n']}; R-squared = {r['r2']:.3f}; adjusted = {r['adj_r2']:.3f}.")
-            im(png(RG.line_fig(r) if r["k"] == 1 else RG.avp_fig(r)), "Regression line" if r["k"] == 1 else "Actual vs predicted")
-            tb(r["coef"].round(4), "Coefficients"); im(stitch([png(f) for f in RG.diag_figs(r)]), "Residual diagnostics"); bl(RG.interpret(r))
+            dfr, dums = RG.add_dummies(df, cats) if cats else (df, [])
+            allx = list(xs) + dums
+            r = RG.fit_ols(dfr, y, allx); r["dummies"] = dums
+            p(f"Response: **{y}**; numeric predictors: **{', '.join(xs) if xs else 'none'}**" + (f"; categorical predictors (dummy-coded, first level = reference): **{', '.join(cats)}**" if cats else "")
+              + f"; rows used: {r['n']}; R-squared = {r['r2']:.3f}; adjusted = {r['adj_r2']:.3f}.")
+            im(png(RG.line_fig(r) if (r["k"] == 1 and not dums) else RG.avp_fig(r)), "Regression line" if (r["k"] == 1 and not dums) else "Actual vs predicted")
+            tb(r["coef"].round(4), "Coefficients"); im(stitch([png(f) for f in RG.diag_figs(r)]), "Residual diagnostics")
+            bl(RG.interpret(r, show_dw=bool(cfg.get("reg_dw"))))
+            if cfg.get("reg_ho"):
+                try:
+                    ho = RG.holdout_eval(dfr, y, allx, cfg.get("reg_frac", .25), cfg.get("reg_seed", 42))
+                    tb(pd.DataFrame({"measure": ["Rows in training / test", "RMSE", "R-squared"],
+                                     "training": [ho["n_train"], round(ho["rmse_train"], 4), round(ho["r2_train"], 3)],
+                                     "test (unseen)": [ho["n_test"], round(ho["rmse_test"], 4), round(ho["r2_test"], 3)]}), "Hold-out test")
+                    bl(RG.interpret_holdout(ho))
+                except ValueError as e:
+                    p(f"Hold-out test could not be run: {e}")
         except ValueError as e:
             p(f"Regression could not be run: {e}")
+    if cfg.get("paired"):
+        h1("Paired test"); a, b2 = cfg["paired"]
+        try:
+            r = paired_test(df[a].to_numpy(float), df[b2].to_numpy(float))
+            p(f"Comparing **{a}** and **{b2}** on {r['n']} complete pairs (mean {a} = {r['mean1']:.4g}, mean {b2} = {r['mean2']:.4g}).")
+            tb(pd.DataFrame({"result": ["Paired t-test p-value", "Mean difference (first - second)", "95% CI of the difference", "Cohen's dz",
+                                        "Wilcoxon signed-rank p-value", "Matched-pairs rank-biserial", "Shapiro-Wilk p of the differences"],
+                             "value": [fmt_p(r["p_t"]), f"{r['mean_diff']:.4g}", f"({r['ci'][0]:.4g}, {r['ci'][1]:.4g})", f"{r['cohen_dz']:.3f}",
+                                       "-" if np.isnan(r["p_wilcoxon"]) else fmt_p(r["p_wilcoxon"]), "-" if np.isnan(r["rank_biserial"]) else f"{r['rank_biserial']:.3f}",
+                                       "-" if np.isnan(r["shapiro_p_diff"]) else fmt_p(r["shapiro_p_diff"])]}), "Paired test")
+            bl(interpret_paired(r, a, b2))
+        except ValueError as e:
+            p(f"Paired test could not be run: {e}")
+    if cfg.get("one"):
+        h1("One-sample test"); c, mu0 = cfg["one"]
+        try:
+            r = one_sample_test(df[c].to_numpy(float), float(mu0))
+            p(f"Testing whether the mean of **{c}** differs from **{mu0:g}** (n = {r['n']}, mean = {r['mean']:.4g}, median = {r['median']:.4g}).")
+            tb(pd.DataFrame({"result": ["One-sample t-test p-value", "95% CI of the mean", "Cohen's d", "Wilcoxon signed-rank p-value", "Shapiro-Wilk p"],
+                             "value": [fmt_p(r["p_t"]), f"({r['ci'][0]:.4g}, {r['ci'][1]:.4g})", f"{r['cohen_d']:.3f}",
+                                       "-" if np.isnan(r["p_wilcoxon"]) else fmt_p(r["p_wilcoxon"]), "-" if np.isnan(r["shapiro_p"]) else fmt_p(r["shapiro_p"])]}), "One-sample test")
+            bl(interpret_one_sample(r))
+        except ValueError as e:
+            p(f"One-sample test could not be run: {e}")
+    if cfg.get("friedman"):
+        h1("Friedman test (repeated measures)"); fc = cfg["friedman"]
+        try:
+            r = friedman_test(df[fc])
+            p(f"{r['n']} complete subjects measured under {r['k']} conditions: {', '.join(fc)}.")
+            tb(r["summary"], "Summary by condition"); tb(r["pairs"], "Pairwise Wilcoxon signed-rank tests (Holm-adjusted)"); bl(interpret_friedman(r))
+        except ValueError as e:
+            p(f"Friedman test could not be run: {e}")
     if cfg.get("grp"):
         h1("Group comparison"); gn, gc = cfg["grp"]; d = df[[gn, gc]].dropna(); lv = sorted(d[gc].unique(), key=str)
         if len(lv) == 2:
@@ -143,7 +189,7 @@ def build_report(df, name, cfg):
             p(f"Comparing **{gn}** between **{lv[0]}** (n={r['n1']}, mean={r['mean1']:.3f}) and **{lv[1]}** (n={r['n2']}, mean={r['mean2']:.3f}).")
             tb(pd.DataFrame({"result": ["Welch t-test p-value", "95% CI of mean difference", "Cohen's d", "Mann-Whitney p-value", "Rank-biserial correlation",
                                         "Shapiro-Wilk p (group 1 / group 2)", "Levene p"],
-                             "value": [f"{r['welch_p']:.4g}", f"({lo:.3f}, {hi:.3f})", f"{r['cohen_d']:.3f}", f"{r['mannwhitney_p']:.4g}",
+                             "value": [fmt_p(r['welch_p']), f"({lo:.3f}, {hi:.3f})", f"{r['cohen_d']:.3f}", fmt_p(r['mannwhitney_p']),
                                        f"{r['rank_biserial']:.3f}", f"{r['shapiro_p_group1']:.3f} / {r['shapiro_p_group2']:.3f}", f"{r['levene_p']:.3f}"]}), "Two-group test")
         elif 3 <= len(lv) <= 10:
             r = multi_group_test({str(k): s[gn].values for k, s in d.groupby(gc)})
@@ -151,13 +197,16 @@ def build_report(df, name, cfg):
         else:
             p("The grouping column needs 2 to 10 groups.")
         if 2 <= len(lv) <= 10:
+            gt = group_normality(df, gn, gc); tb(gt.drop(columns=["rule"]), f"Normality inside each group of {gc} (what t-tests and ANOVA need)")
             im(png(E.group_box(df, gn, gc)[0]), f"{gn} by {gc}")
     if cfg.get("chi"):
         h1("Chi-square test"); a, b = cfg["chi"]; d = df[[a, b]].dropna(); r = chi_square_test(d[a], d[b])
         tb(r["table"], "Observed counts"); tb(r["residuals"], "Adjusted standardised residuals"); bl(interpret_chi(r))
     B.append(("h1", "Notes"))
     B.append(("bullets", ["Interpretations are generated automatically from rules of thumb; check the plots and use your own judgement.",
-                          "Association is not causation. Results describe this dataset only.", "Generated by StatGuide."]))
+                          "Association is not causation. Results describe this dataset only.",
+                          "Regression uses ordinary least squares; categorical predictors are dummy-coded against the first level. A hold-out test shows accuracy on unseen rows.",
+                          "Generated by StatGuide."]))
     return B
 
 
